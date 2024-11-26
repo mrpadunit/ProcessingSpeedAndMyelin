@@ -1,0 +1,240 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+Load packages
+```{r libraries}
+library(tidyverse)
+library(readxl)
+library(ggpmisc)
+library(Matrix)
+library(lmerTest)
+require(cowplot)
+library(gridExtra)
+library(ggbeeswarm)
+library(reshape2)
+library(performance)
+library(ggeffects)
+require("gridExtra")
+library(latex2exp)
+library(writexl)
+
+```
+
+Set data folder
+```{r set data path}
+datapath <- '..'
+```
+
+Read in data. Notice MWF values were centered per ROI and then scaled up by 50, and Age is centered at 70. The centering does not impact the beta coefficients but the scaling is considered.
+```{r read MRI data}
+data <- read_excel(file.path(datapath, 
+                            "BLSA_GESTALT_MWF_Cognition.xlsx"), 
+                  sheet = "Sheet1")
+```
+
+Figure 1 plot
+```{r}
+plot_names <- c('ProcessingSpeed' = 'Processing Speed',
+                'ps' = 'Processing Speed Composite')
+
+
+plot1 <- ggplot(data = data %>%
+         pivot_longer(cols = c("ProcessingSpeed", "ps"),
+                      names_to = "domain",
+                      values_to = "z_score") %>%
+         drop_na(z_score),
+     aes(x = yrs.from.mri, y = ID, group = ID,  colour= dataset, shape= sex)) + xlab("Time to MRI scan (yrs)") + ylab("Participants") +
+geom_line(size = 0.3) +
+geom_point(size = 1) +
+  ylim(0, 123) + 
+  scale_color_manual(values = c("red", "blue"), name = "Dataset", 
+                     labels = c("BLSA", 
+                                "GT")) + 
+  scale_shape_manual(name = "Sex", values = c(16, 17), labels = c("Male", "Female")) +
+  facet_wrap(. ~ domain, nrow=1, labeller = as_labeller(plot_names)) +
+  theme_bw() 
+  
+
+plot2 <- ggplot(data = data %>%
+         pivot_longer(cols = c("ProcessingSpeed", "ps"),
+                      names_to = "domain",
+                      values_to = "z score"), 
+       aes(x = age.cog, y = `z score`, group = ID,  colour = dataset, shape= sex)) + xlab("Age") + ylab('z-score') +
+  geom_line(size = 0.3) + 
+  geom_point(size = 1) + 
+  scale_color_manual(values = c("red","blue"), name = "Dataset", 
+                     labels = c("BLSA", 
+                                "GESTALT")) + 
+  scale_shape_manual(name = "Sex", values = c(16, 17), labels = c("Male", "Female")) +
+  facet_wrap(. ~ domain, nrow=1, labeller = as_labeller(plot_names)) +
+  theme_bw() 
+
+
+aligned_grid <- plot_grid(plot1, plot2, ncol = 1, align = "v")
+print(aligned_grid)
+```
+
+Figure 3 plot
+```{r}
+data.cs <- data %>% 
+  arrange(ID, abs(yrs.from.mri)) %>% 
+  distinct(ID, .keep_all=T)
+
+predict_region <- function(data, region, data.cs) {
+  # Create a dynamic formula with the specific region
+  formula <- as.formula(paste("ProcessingSpeed ~", region, "* yrs.from.mri + sex + race_3cat + educ_years + Age.c70 + I(Age.c70^2)+ (1|ID)"))
+  
+  # Calculate quantiles for the region
+  qrtl <- as.vector(quantile(data.cs[[region]], probs = c(0.25, 0.50, 0.75), na.rm = TRUE))
+  
+  # Fit the model
+  fit <- lmer(formula, data = data)
+  
+  # Prepare the terms for prediction
+  terms <- c("yrs.from.mri[-2.5:2.5:0.5]", sprintf("%s [%s]", region, paste(qrtl, collapse=", ")))
+  
+  # Generate predictions
+  preds <- ggpredict(fit, terms = terms)  
+  
+  transform(preds, region = gsub("MWF_", "", region))  # Clean up region names for better display
+}
+
+regions <- c("MWF_WholeBrain_WM", "MWF_Frontal_WM", "MWF_Occipital_WM", "MWF_Parietal_WM", "MWF_Temporal_WM", "MWF_Cerebellum_WM")
+all_predictions <- lapply(regions, function(region) predict_region(data, region, data.cs))
+
+all_predictions$region_number <- factor(all_predictions$region, levels = c("1", "2", "3", "4", "5", "6"))
+
+
+# Combine all predictions into one data frame
+all_predictions_df <- do.call(rbind, all_predictions) 
+
+all_predictions_df <- all_predictions_df %>%
+  mutate(region_number = case_when(
+    region == "WholeBrain_WM" ~ 1L,
+    region == "Frontal_WM" ~ 2L,
+    region == "Occipital_WM" ~ 3L,
+    region == "Parietal_WM" ~ 4L,
+    region == "Temporal_WM" ~ 5L,
+    region == "Cerebellum_WM" ~ 6L,
+    TRUE ~ NA_integer_  # Ensures integers are used throughout
+  )) %>%
+  mutate(group_percent = factor((row_number() - 1) %% 3 + 1, 
+                        labels = c("25%", "50%", "75%")))
+
+
+
+
+
+# Plotting
+plot_names <- c('1' = 'Whole Brain MWF',
+                '2' = 'Frontal lobe MWF',
+                '3' = 'Occipital lobe MWF',
+                '4' = 'Parietal lobe MWF',
+                '5' = 'Temporal lobe MWF',
+                '6' = 'Cerebellum MWF')
+
+colors <- rep(c("#CC79A7", "yellow", "#009E73"), times = 1)
+
+p <- ggplot(all_predictions_df, aes(x = x, y = predicted, color = as.factor(group_percent))) +
+  geom_line(size = 1) +  # Draw main lines thicker
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group_percent)), alpha = 0.2, color = NA) +  # Apply fill, remove color outline
+  geom_line(aes(y = conf.low, color = as.factor(group_percent)), size = 0.5, linetype = "dashed") +  # Lower CI boundary as dashed line
+  geom_line(aes(y = conf.high, color = as.factor(group_percent)), size = 0.5, linetype = "dashed") +  # Upper CI boundary as dashed line 
+  facet_wrap(facets = ~region_number, scales = "free_y", labeller = as_labeller(plot_names)) +
+  labs(x = "Time to MRI scans (years)", y = "Predicted Processing Speed Z-score") +
+  
+  scale_color_manual(values = colors, name = "MWF Quantiles") +
+  scale_fill_manual(values = colors) +  # Ensure fills match the line colors
+  guides(
+    color = guide_legend(title = "Quantiles"),
+    fill = FALSE  # Hide fill legend if not desired
+  ) +
+  theme_bw() 
+
+print(p)
+
+```
+Figure 4 plot
+```{r}
+data.cs <- data %>% 
+  arrange(ID, abs(yrs.from.mri)) %>% 
+  distinct(ID, .keep_all=T)
+
+predict_region <- function(data, region, data.cs) {
+  # Create a dynamic formula with the specific region
+  formula <- as.formula(paste("ps ~", region, "* yrs.from.mri + sex + race_3cat + educ_years + Age.c70 + I(Age.c70^2)+ (1|ID)"))
+  
+  # Calculate quantiles for the region
+  qrtl <- quantile(data.cs[[region]], probs = c(0.25, 0.50, 0.75), na.rm = TRUE)
+  
+  # Fit the model
+  fit <- lmer(formula, data = data)
+  
+  # Prepare the terms for prediction
+  terms <- c("yrs.from.mri[-2.5:2.5]", sprintf("%s [%s]", region, paste(qrtl, collapse=", ")))
+  
+  # Generate predictions
+  preds <- ggpredict(fit, terms = terms) 
+  
+  transform(preds, region = gsub("MWF_", "", region))  # Clean up region names for better display
+}
+
+regions <- c("MWF_WholeBrain_WM", "MWF_Frontal_WM", "MWF_Occipital_WM", "MWF_Parietal_WM", "MWF_Temporal_WM", "MWF_Cerebellum_WM")
+all_predictions <- lapply(regions, function(region) predict_region(data, region, data.cs))
+
+all_predictions$region_number <- factor(all_predictions$region, levels = c("1", "2", "3", "4", "5", "6"))
+
+
+# Combine all predictions into one data frame
+all_predictions_df <- do.call(rbind, all_predictions) 
+
+all_predictions_df <- all_predictions_df %>%
+  mutate(region_number = case_when(
+    region == "WholeBrain_WM" ~ 1L,
+    region == "Frontal_WM" ~ 2L,
+    region == "Occipital_WM" ~ 3L,
+    region == "Parietal_WM" ~ 4L,
+    region == "Temporal_WM" ~ 5L,
+    region == "Cerebellum_WM" ~ 6L,
+    TRUE ~ NA_integer_  # Ensures integers are used throughout
+  ))%>%
+  mutate(group_percent = factor((row_number() - 1) %% 3 + 1, 
+                        labels = c("25%", "50%", "75%")))
+
+
+
+# Plotting
+plot_names <- c('1' = 'Whole Brain MWF',
+                '2' = 'Frontal lobe MWF',
+                '3' = 'Occipital lobe MWF',
+                '4' = 'Parietal lobe MWF',
+                '5' = 'Temporal lobe MWF',
+                '6' = 'Cerebellum MWF')
+colors <- rep(c("#CC79A7", "yellow", "#009E73"), times = 1)
+
+p <- ggplot(all_predictions_df, aes(x = x, y = predicted, color = as.factor(group_percent))) +
+  geom_line(size = 1) +  # Draw main lines thicker
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group_percent)), alpha = 0.2, color = NA) +  # Apply fill, remove color outline
+  geom_line(aes(y = conf.low, color = as.factor(group_percent)), size = 0.5, linetype = "dashed") +  # Lower CI boundary as dashed line
+  geom_line(aes(y = conf.high, color = as.factor(group_percent)), size = 0.5, linetype = "dashed") +  # Upper CI boundary as dashed line 
+  facet_wrap(facets = ~region_number, scales = "free_y", labeller = as_labeller(plot_names)) +
+  labs(x = "Time to MRI scans (years)", y = "Predicted Processing Speed Composite Z-score") +
+  scale_color_manual(values = colors, name = "MWF Quantiles") +
+  scale_fill_manual(values = colors) +  # Ensure fills match the line colors
+  guides(
+    color = guide_legend(title = "Quantiles"),
+    fill = FALSE  # Hide fill legend if not desired
+  ) +
+  theme_bw()
+
+print(p)
+
+```
+
+
+
