@@ -7,7 +7,7 @@ This repository contains the necessary data and analysis code for the BC paper t
 All data is contained in the `BLSA_GESTALT_MWF_Cognition.xlsx` file.
 
 ## Code
-
+`Figure1_3_4_making.RMD` provides an example of plotting figures 1, 3 and 4.
 
 ## Contact
 
